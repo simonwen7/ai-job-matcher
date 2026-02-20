@@ -1,119 +1,128 @@
+// src/app/api/analyze/route.ts
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 type AnalyzeResult = {
-  score: number;
+  score: number; // 0-100
   summary: string;
-  strengths: string[];
   missingSkills: string[];
   suggestions: string[];
+  strengths: string[];
 };
 
-function clampScore(n: number) {
-  if (Number.isNaN(n)) return 0;
-  return Math.max(0, Math.min(100, Math.round(n)));
+function safeJsonParse<T>(text: string): T | null {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+function clampScore(n: any) {
+  const x = Number(n);
+  if (Number.isNaN(x)) return 0;
+  return Math.max(0, Math.min(100, Math.round(x)));
+}
+
+function normalizeResult(raw: any): AnalyzeResult {
+  const score = clampScore(raw?.score);
+
+  const summary =
+    typeof raw?.summary === "string" && raw.summary.trim()
+      ? raw.summary.trim()
+      : "No summary available.";
+
+  const missingSkills = Array.isArray(raw?.missingSkills)
+    ? raw.missingSkills.map((s: any) => String(s).trim()).filter(Boolean)
+    : [];
+
+  const suggestions = Array.isArray(raw?.suggestions)
+    ? raw.suggestions.map((s: any) => String(s).trim()).filter(Boolean)
+    : [];
+
+  const strengths = Array.isArray(raw?.strengths)
+    ? raw.strengths.map((s: any) => String(s).trim()).filter(Boolean)
+    : [];
+
+  return { score, summary, missingSkills, suggestions, strengths };
 }
 
 export async function POST(req: Request) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json(
-        { error: "Missing OPENAI_API_KEY in environment variables." },
-        { status: 500 }
-      );
-    }
-
     const body = await req.json();
+    const resume = String(body?.resume ?? "").trim();
+    const job = String(body?.job ?? "").trim();
 
-    // ✅ 兼容前端发的 {resume, job} 以及你原来设计的 {resumeText, jobText}
-    const resumeText = String(body?.resumeText ?? body?.resume ?? "").trim();
-    const jobText = String(body?.jobText ?? body?.job ?? "").trim();
-
-    if (!resumeText || !jobText) {
-      return NextResponse.json(
-        { error: "resumeText and jobText are required." },
-        { status: 400 }
-      );
+    if (!resume || !job) {
+      return NextResponse.json({ error: "Missing resume or job description." }, { status: 400 });
     }
 
-    // ✅ 防止超长
-    const RESUME_MAX = 12000;
-    const JOB_MAX = 12000;
-    const resume = resumeText.slice(0, RESUME_MAX);
-    const job = jobText.slice(0, JOB_MAX);
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json({ error: "OPENAI_API_KEY is not set." }, { status: 500 });
+    }
 
+    const client = new OpenAI({ apiKey });
+
+    // ✅ 强制模型输出 JSON（不用 markdown）
     const system = `
-You are an expert recruiter + resume coach.
-Goal: Evaluate how well the resume matches the job description using semantic understanding (not keyword matching).
-Return ONLY valid JSON. No markdown. No extra text.
-Language: Use the same language as the job description (if mixed, prefer the job description language).
-Scoring:
-- 0-39: weak match
-- 40-69: partial match
-- 70-89: strong match
-- 90-100: excellent match
-Make missingSkills concrete and job-relevant (avoid generic like "communication" unless job truly demands it).
-Suggestions must be actionable (e.g., add bullet X, learn tool Y, quantify impact).
-`;
+You are an ATS-style resume-job matching assistant.
+Return ONLY valid JSON. No markdown, no extra text.
+Output schema:
+{
+  "score": number,                 // 0-100
+  "summary": string,               // 2-4 sentences, direct and specific
+  "strengths": string[],           // 3-6 bullets
+  "missingSkills": string[],       // 5-12 items, short skill phrases
+  "suggestions": string[]          // 5-10 actionable suggestions
+}
+
+Rules:
+- missingSkills must be concrete skills/keywords that appear in job descriptions (tools, frameworks, domains).
+- suggestions must be actionable edits (what to add/change, where).
+- Keep all items concise (<= 14 words each).
+    `.trim();
 
     const user = `
-JOB DESCRIPTION:
-${job}
-
 RESUME:
 ${resume}
 
-Return JSON with this exact shape:
-{
-  "score": number (0-100),
-  "summary": string (2-4 sentences),
-  "strengths": string[] (3-6 items),
-  "missingSkills": string[] (0-8 items),
-  "suggestions": string[] (3-8 items)
-}
-`;
+JOB DESCRIPTION:
+${job}
+    `.trim();
 
-    const completion = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+    const resp = await client.chat.completions.create({
+      model: "gpt-4o-mini",
       temperature: 0.2,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
       ],
-      response_format: { type: "json_object" },
     });
 
-    const raw = completion.choices[0]?.message?.content ?? "{}";
+    const text = resp.choices?.[0]?.message?.content?.trim() ?? "";
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return NextResponse.json(
-        { error: "Model returned invalid JSON.", raw },
-        { status: 500 }
-      );
+    // 1) 先直接 JSON parse
+    let parsed = safeJsonParse<any>(text);
+
+    // 2) 如果模型夹带了额外文本，尝试截取第一个 {...} 区间再 parse
+    if (!parsed) {
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+      if (start !== -1 && end !== -1 && end > start) {
+        parsed = safeJsonParse<any>(text.slice(start, end + 1));
+      }
     }
 
-    const result: AnalyzeResult = {
-      score: clampScore(Number(parsed?.score)),
-      summary: String(parsed?.summary ?? ""),
-      strengths: Array.isArray(parsed?.strengths) ? parsed.strengths.map(String) : [],
-      missingSkills: Array.isArray(parsed?.missingSkills) ? parsed.missingSkills.map(String) : [],
-      suggestions: Array.isArray(parsed?.suggestions) ? parsed.suggestions.map(String) : [],
-    };
+    // 3) 最终兜底：给一个可用结构
+    const result = normalizeResult(parsed ?? { score: 0, summary: text });
 
     return NextResponse.json(result);
   } catch (err: any) {
-    console.error(err);
     return NextResponse.json(
-      { error: err?.message ?? "Server error occurred." },
+      { error: err?.message ?? "Unknown error" },
       { status: 500 }
     );
   }

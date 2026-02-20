@@ -1,94 +1,89 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 
 type AnalyzeResult = {
-  score: number;
-  summary?: string;
+  score: number; // 0-100
+  summary: string;
+  strengths: string[];
   missingSkills: string[];
   suggestions: string[];
 };
 
 function normalizeExtractedText(raw: string) {
-    let s = (raw || "")
-      .replace(/\r\n/g, "\n")
-      .replace(/\u00A0/g, " ") // nbsp
-      // 额外：一些常见的“瘦空格/窄空格”也统一成普通空格
-      .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, " ");
-  
-    // 0) 先把一些奇怪的“分隔点/多空格”弄干净一点（保留换行）
-    s = s
-      .split("\n")
-      .map((line) => line.replace(/[ \t]{2,}/g, " ").trimEnd())
-      .join("\n");
-  
-    // 1) 修复年份被拆成 "20 24" / "19 98" 这种：=> 2024 / 1998
-    //    只对 19xx / 20xx 生效，避免误伤普通数字
-    s = s.replace(/\b(19|20)\s+(\d{2})\b/g, "$1$2");
-  
-    // 2) 修复年份被拆成 "2 0 2 4" 这种：=> 2024（连续数字间空格去掉）
-    //    反复跑几次直到稳定
-    for (let i = 0; i < 6; i++) {
-      const next = s.replace(/\b(\d)\s+(?=\d\b)/g, "$1");
-      if (next === s) break;
-      s = next;
-    }
-  
-    // 2.5) 修复月份/年份被拆开：
-    // - "J a n 20 24" -> "Jan 2024"
-    // - "Jan 20 24"  -> "Jan 2024"
-    // - 同时把 "–" "—" "-" 两边的怪空格也规整
-    for (let i = 0; i < 6; i++) {
-      const next = s
-        .replace(/\b(J)\s*(a)\s*(n)\b/gi, "Jan")
-        .replace(/\b(F)\s*(e)\s*(b)\b/gi, "Feb")
-        .replace(/\b(M)\s*(a)\s*(r)\b/gi, "Mar")
-        .replace(/\b(A)\s*(p)\s*(r)\b/gi, "Apr")
-        .replace(/\b(M)\s*(a)\s*(y)\b/gi, "May")
-        .replace(/\b(J)\s*(u)\s*(n)\b/gi, "Jun")
-        .replace(/\b(J)\s*(u)\s*(l)\b/gi, "Jul")
-        .replace(/\b(A)\s*(u)\s*(g)\b/gi, "Aug")
-        .replace(/\b(S)\s*(e)\s*(p)\b/gi, "Sep")
-        .replace(/\b(O)\s*(c)\s*(t)\b/gi, "Oct")
-        .replace(/\b(N)\s*(o)\s*(v)\b/gi, "Nov")
-        .replace(/\b(D)\s*(e)\s*(c)\b/gi, "Dec")
-        .replace(
-          /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d)\s*(\d)\s*(\d)\s*(\d)\b/gi,
-          "$1 $2$3$4$5"
-        )
-        .replace(/\s*([–—-])\s*/g, " $1 ");
-  
-      if (next === s) break;
-      s = next;
-    }
-  
-    // 3) 修复单词被拆成 "S UMMARY" / "P ROJECTS"：=> SUMMARY / PROJECTS
-    //    规则：单个字母 + 空格 + 至少2个字母 => 合并
-    s = s.replace(/\b([A-Za-z])\s+([A-Za-z]{2,})\b/g, "$1$2");
-  
-    // 4) 修复 "S U M M A R Y" 这种每个字母都拆开：=> SUMMARY
-    //    规则：字母之间的空格持续合并（多轮）
-    for (let i = 0; i < 8; i++) {
-      const next = s.replace(/\b([A-Za-z])\s+(?=[A-Za-z]\b)/g, "$1");
-      if (next === s) break;
-      s = next;
-    }
-  
-    // 5) 修复词内连字符被拆开： "end - to - end" / "mid - range" => "end-to-end" / "mid-range"
-    //    只在 “字母/数字-字母/数字” 的情况下合并，避免影响日期范围 "2024 - 2025"
-    s = s.replace(/\b([A-Za-z0-9])\s*-\s*([A-Za-z0-9])\b/g, "$1-$2");
-  
-    // 6) 再清一次行内多余空格
-    s = s
-      .split("\n")
-      .map((line) => line.replace(/[ \t]{2,}/g, " ").trim())
-      .join("\n");
-  
-    return s.trim();
+  let s = (raw || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u00A0/g, " ") // nbsp
+    // 额外：一些常见的“瘦空格/窄空格”也统一成普通空格
+    .replace(/[\u2000-\u200B\u202F\u205F\u3000]/g, " ");
+
+  // 0) 先把一些奇怪的“分隔点/多空格”弄干净一点（保留换行）
+  s = s
+    .split("\n")
+    .map((line) => line.replace(/[ \t]{2,}/g, " ").trimEnd())
+    .join("\n");
+
+  // 1) 修复年份被拆成 "20 24" / "19 98" 这种：=> 2024 / 1998
+  //    只对 19xx / 20xx 生效，避免误伤普通数字
+  s = s.replace(/\b(19|20)\s+(\d{2})\b/g, "$1$2");
+
+  // 2) 修复年份被拆成 "2 0 2 4" 这种：=> 2024（连续数字间空格去掉）
+  //    反复跑几次直到稳定
+  for (let i = 0; i < 6; i++) {
+    const next = s.replace(/\b(\d)\s+(?=\d\b)/g, "$1");
+    if (next === s) break;
+    s = next;
   }
-  
-  
+
+  // 2.5) 修复月份/年份被拆开 + 规整破碎空格/破折号
+  for (let i = 0; i < 6; i++) {
+    const next = s
+      .replace(/\b(J)\s*(a)\s*(n)\b/gi, "Jan")
+      .replace(/\b(F)\s*(e)\s*(b)\b/gi, "Feb")
+      .replace(/\b(M)\s*(a)\s*(r)\b/gi, "Mar")
+      .replace(/\b(A)\s*(p)\s*(r)\b/gi, "Apr")
+      .replace(/\b(M)\s*(a)\s*(y)\b/gi, "May")
+      .replace(/\b(J)\s*(u)\s*(n)\b/gi, "Jun")
+      .replace(/\b(J)\s*(u)\s*(l)\b/gi, "Jul")
+      .replace(/\b(A)\s*(u)\s*(g)\b/gi, "Aug")
+      .replace(/\b(S)\s*(e)\s*(p)\b/gi, "Sep")
+      .replace(/\b(O)\s*(c)\s*(t)\b/gi, "Oct")
+      .replace(/\b(N)\s*(o)\s*(v)\b/gi, "Nov")
+      .replace(/\b(D)\s*(e)\s*(c)\b/gi, "Dec")
+      .replace(
+        /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d)\s*(\d)\s*(\d)\s*(\d)\b/gi,
+        "$1 $2$3$4$5"
+      )
+      .replace(/\s*([–—-])\s*/g, " $1 ");
+
+    if (next === s) break;
+    s = next;
+  }
+
+  // 3) 修复单词被拆成 "S UMMARY" / "P ROJECTS"
+  s = s.replace(/\b([A-Za-z])\s+([A-Za-z]{2,})\b/g, "$1$2");
+
+  // 4) 修复 "S U M M A R Y" 每个字母都拆开
+  for (let i = 0; i < 8; i++) {
+    const next = s.replace(/\b([A-Za-z])\s+(?=[A-Za-z]\b)/g, "$1");
+    if (next === s) break;
+    s = next;
+  }
+
+  // 5) 修复词内连字符被拆开：end - to - end / mid - range
+  //    仅在“字母/数字-字母/数字”合并，避免日期范围
+  s = s.replace(/\b([A-Za-z0-9])\s*-\s*([A-Za-z0-9])\b/g, "$1-$2");
+
+  // 6) 再清一次行内多余空格
+  s = s
+    .split("\n")
+    .map((line) => line.replace(/[ \t]{2,}/g, " ").trim())
+    .join("\n");
+
+  return s.trim();
+}
+
 function toBullets(raw: string): { title?: string; bullets: string[] } {
   const text = normalizeExtractedText(raw);
   if (!text) return { bullets: [] };
@@ -136,6 +131,7 @@ function toBullets(raw: string): { title?: string; bullets: string[] } {
       .split(/(?<=[.!?;])\s+/)
       .map((p) => p.trim())
       .filter(Boolean);
+
     if (parts.length === 1) {
       const out: string[] = [];
       let cur = "";
@@ -185,6 +181,25 @@ function toBullets(raw: string): { title?: string; bullets: string[] } {
   return { title, bullets: finalBullets };
 }
 
+function clampScore(x: unknown) {
+  const n = typeof x === "number" ? x : Number(x);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+// ✅ 关键：把后端返回的“可能缺字段/字段类型不对”的 data，规范成 AnalyzeResult
+function normalizeAnalyzeResult(data: any): AnalyzeResult {
+  return {
+    score: clampScore(data?.score),
+    summary: typeof data?.summary === "string" ? data.summary : "",
+    strengths: Array.isArray(data?.strengths) ? data.strengths.filter((x: any) => typeof x === "string") : [],
+    missingSkills: Array.isArray(data?.missingSkills)
+      ? data.missingSkills.filter((x: any) => typeof x === "string")
+      : [],
+    suggestions: Array.isArray(data?.suggestions) ? data.suggestions.filter((x: any) => typeof x === "string") : [],
+  };
+}
+
 export default function AnalyzePage() {
   const [resume, setResume] = useState("");
   const [job, setJob] = useState("");
@@ -219,15 +234,9 @@ export default function AnalyzePage() {
 
       const data = await res.json();
 
-      if (!res.ok) {
-        throw new Error(data?.error || "Extract failed");
-      }
+      if (!res.ok) throw new Error(data?.error || "Extract failed");
+      if (typeof data?.text !== "string") throw new Error("No text returned from /api/extract");
 
-      if (typeof data?.text !== "string") {
-        throw new Error("No text returned from /api/extract");
-      }
-
-      // ✅ 来自文件
       setResumeSource("file");
       setResume(data.text);
     } catch (err: any) {
@@ -241,6 +250,7 @@ export default function AnalyzePage() {
   const handleAnalyze = async () => {
     setError(null);
     setLoadingAnalyze(true);
+    setResult(null);
 
     try {
       const res = await fetch("/api/analyze", {
@@ -251,11 +261,10 @@ export default function AnalyzePage() {
 
       const data = await res.json();
 
-      if (!res.ok) {
-        throw new Error(data?.error || "Analyze failed");
-      }
+      if (!res.ok) throw new Error(data?.error || "Analyze failed");
 
-      setResult(data);
+      // ✅ 不直接 setResult(data)，避免字段不全/类型不对导致 UI 报错
+      setResult(normalizeAnalyzeResult(data));
     } catch (err: any) {
       setError(err?.message || "Analyze failed");
     } finally {
@@ -268,7 +277,7 @@ export default function AnalyzePage() {
     setJob("");
     setResult(null);
     setError(null);
-    setResumeSource("paste"); // ✅ 清空后回到粘贴模式
+    setResumeSource("paste");
   };
 
   return (
@@ -299,9 +308,7 @@ export default function AnalyzePage() {
               file:bg-black file:px-4 file:py-2 file:text-white hover:file:bg-gray-800
               dark:file:bg-white dark:file:text-black"
           />
-          <p className="mt-2 text-xs text-gray-500 dark:text-neutral-400">
-            Supports: .pdf / .docx / .txt
-          </p>
+          <p className="mt-2 text-xs text-gray-500 dark:text-neutral-400">Supports: .pdf / .docx / .txt</p>
 
           {/* ✅ 如果是“粘贴模式”，才显示 textarea */}
           {resumeSource !== "file" && (
@@ -323,11 +330,9 @@ export default function AnalyzePage() {
           {resume.trim() && (
             <div className="mt-6 rounded-xl border border-black/20 dark:border-white/15 bg-white/60 dark:bg-neutral-950/60 p-4">
               <div className="flex items-center justify-between mb-3">
-                <div className="text-xs text-gray-500 dark:text-neutral-400">
-                  Preview (bullet points)
-                </div>
+                <div className="text-xs text-gray-500 dark:text-neutral-400">Preview (bullet points)</div>
 
-                {/* ✅ 让用户从 file 模式切回 paste 模式（可选，但很好用） */}
+                {/* ✅ 让用户从 file 模式切回 paste 模式 */}
                 {resumeSource === "file" && (
                   <button
                     type="button"
@@ -402,12 +407,94 @@ export default function AnalyzePage() {
           </div>
         )}
 
+        {/* ✅ Result (progress + 3 blocks) */}
         {result && (
           <div className="mt-8 rounded-2xl bg-white dark:bg-neutral-900 p-6 shadow-sm ring-1 ring-black/5 dark:ring-white/10">
-            <h2 className="text-2xl font-bold">Match Score: {result.score}%</h2>
-            {result.summary && (
-              <p className="mt-3 text-gray-700 dark:text-neutral-200">{result.summary}</p>
-            )}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-bold">Match Score</h2>
+                {result.summary ? (
+                  <p className="mt-1 text-sm text-gray-600 dark:text-neutral-300">{result.summary}</p>
+                ) : (
+                  <p className="mt-1 text-sm text-gray-500 dark:text-neutral-400">No summary returned.</p>
+                )}
+              </div>
+
+              <div className="shrink-0 text-right">
+                <div className="text-3xl font-extrabold">{clampScore(result.score)}%</div>
+                <div className="text-xs text-gray-500 dark:text-neutral-400">Overall fit</div>
+              </div>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="mt-5">
+              <div className="h-3 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                <div
+                  className="h-full rounded-full bg-black dark:bg-white transition-all"
+                  style={{ width: `${clampScore(result.score)}%` }}
+                />
+              </div>
+              <div className="mt-2 flex justify-between text-xs text-gray-500 dark:text-neutral-400">
+                <span>Low</span>
+                <span>Medium</span>
+                <span>High</span>
+              </div>
+            </div>
+
+            {/* 3-column blocks */}
+            <div className="mt-6 grid gap-4 md:grid-cols-3">
+              {/* Strengths */}
+              <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-neutral-950/40 p-4">
+                <div className="mb-2 text-sm font-semibold">Strengths</div>
+                {result.strengths.length > 0 ? (
+                  <ul className="space-y-2 text-sm text-gray-800 dark:text-neutral-200">
+                    {result.strengths.slice(0, 6).map((s, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span className="mt-[2px]">•</span>
+                        <span className="break-words">{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="text-sm text-gray-500 dark:text-neutral-400">No strengths extracted.</div>
+                )}
+              </div>
+
+              {/* Missing Skills */}
+              <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-neutral-950/40 p-4">
+                <div className="mb-2 text-sm font-semibold">Missing Skills</div>
+                {result.missingSkills.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {result.missingSkills.slice(0, 14).map((k, i) => (
+                      <span
+                        key={i}
+                        className="rounded-full border border-black/15 dark:border-white/15 px-2 py-1 text-xs text-gray-800 dark:text-neutral-200"
+                      >
+                        {k}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-gray-500 dark:text-neutral-400">No missing skills found.</div>
+                )}
+              </div>
+
+              {/* Suggestions */}
+              <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-neutral-950/40 p-4">
+                <div className="mb-2 text-sm font-semibold">Suggestions</div>
+                {result.suggestions.length > 0 ? (
+                  <ol className="space-y-2 text-sm text-gray-800 dark:text-neutral-200 list-decimal pl-4">
+                    {result.suggestions.slice(0, 8).map((t, i) => (
+                      <li key={i} className="break-words">
+                        {t}
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <div className="text-sm text-gray-500 dark:text-neutral-400">No suggestions generated.</div>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
