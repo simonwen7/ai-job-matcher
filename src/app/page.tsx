@@ -2,22 +2,28 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
-      <h1 className="text-4xl font-bold mb-6">
+    <main className="min-h-screen flex flex-col items-center justify-center 
+                     bg-white text-gray-900
+                     dark:bg-neutral-950 dark:text-white">
+
+      <h1 className="text-5xl font-extrabold mb-6 tracking-tight">
         AI Resume Match
       </h1>
 
-      <p className="text-gray-600 mb-8 text-center max-w-xl">
+      <p className="text-gray-600 dark:text-neutral-300 mb-10 text-center max-w-xl text-lg leading-relaxed">
         Upload your resume. Paste a job description.
         Get instant match score and improvement suggestions powered by AI.
       </p>
 
       <Link
         href="/analyze"
-        className="bg-black text-white px-6 py-3 rounded-lg hover:bg-gray-800 transition"
+        className="bg-black text-white px-8 py-4 rounded-2xl text-lg font-semibold
+                   hover:bg-gray-800 transition
+                   dark:bg-white dark:text-black dark:hover:bg-neutral-200"
       >
         Get Started
       </Link>
+
     </main>
   );
 }
