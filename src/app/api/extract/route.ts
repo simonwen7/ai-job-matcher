@@ -1,29 +1,16 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
 import PDFParser from "pdf2json";
+import { normalizeExtractedText } from "@/lib/extract-text";
+import { validateUpload } from "@/lib/upload";
 
 export const runtime = "nodejs";
-
-function normalizeText(s: string) {
-  return (
-    (s || "")
-      .replace(/\r\n/g, "\n")
-      .replace(/[ \t]{2,}/g, " ")
-      // 把常见分隔符变成更像换行（给前端 bullet 更好用）
-      .replace(/\s*\|\s*/g, " | ")
-      .split("\n")
-      .map((line) => line.trim())
-      .join("\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim()
-  );
-}
 
 function safeDecodeURIComponent(x: string) {
   try {
     return decodeURIComponent(x);
   } catch {
-    return x; // 防止 URI malformed
+    return x;
   }
 }
 
@@ -31,17 +18,21 @@ function parsePdfToText(buffer: Buffer): Promise<string> {
   return new Promise((resolve, reject) => {
     const pdfParser = new PDFParser();
 
-    pdfParser.on("pdfParser_dataError", (err: any) => {
-      reject(err?.parserError || err);
+    // pdf2json ships loose callback types; keep handlers permissive here.
+    pdfParser.on("pdfParser_dataError", (err: unknown) => {
+      const parserError =
+        typeof err === "object" && err !== null && "parserError" in err
+          ? (err as { parserError?: unknown }).parserError
+          : undefined;
+      reject(parserError || err);
     });
 
-    pdfParser.on("pdfParser_dataReady", (pdfData: any) => {
+    pdfParser.on("pdfParser_dataReady", (pdfData: { Pages?: Array<{ Texts?: Array<{ R?: Array<{ T?: string }> }> }> }) => {
       try {
         const pages = pdfData?.Pages || [];
         const out: string[] = [];
 
         for (const page of pages) {
-          // pdf2json: page.Texts[].R[].T 是 URI encoded text
           for (const t of page.Texts || []) {
             for (const r of t.R || []) {
               const raw = String(r?.T ?? "");
@@ -68,32 +59,70 @@ export async function POST(req: Request) {
     const file = formData.get("file") as File | null;
 
     if (!file) {
-      return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
+      return NextResponse.json({ error: "No file uploaded." }, { status: 400 });
+    }
+
+    const uploadCheck = validateUpload(file.name, file.size);
+    if (!uploadCheck.ok) {
+      return NextResponse.json({ error: uploadCheck.message }, { status: 400 });
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const name = file.name.toLowerCase();
 
     if (name.endsWith(".pdf")) {
-      const text = await parsePdfToText(buffer);
-      return NextResponse.json({ text: normalizeText(text) });
+      try {
+        const text = await parsePdfToText(buffer);
+        if (!text.trim()) {
+          return NextResponse.json(
+            { error: "No text could be extracted from this PDF. Try pasting your resume as text." },
+            { status: 400 }
+          );
+        }
+        return NextResponse.json({ text: normalizeExtractedText(text) });
+      } catch {
+        return NextResponse.json(
+          { error: "Could not read this PDF. Try a different file or paste your resume as text." },
+          { status: 400 }
+        );
+      }
     }
 
     if (name.endsWith(".docx")) {
-      const result = await mammoth.extractRawText({ buffer });
-      return NextResponse.json({ text: normalizeText(result.value || "") });
+      try {
+        const result = await mammoth.extractRawText({ buffer });
+        const text = result.value || "";
+        if (!text.trim()) {
+          return NextResponse.json(
+            { error: "No text could be extracted from this DOCX file. Try pasting your resume as text." },
+            { status: 400 }
+          );
+        }
+        return NextResponse.json({ text: normalizeExtractedText(text) });
+      } catch {
+        return NextResponse.json(
+          { error: "Could not read this DOCX file. Try a different file or paste your resume as text." },
+          { status: 400 }
+        );
+      }
     }
 
     if (name.endsWith(".txt")) {
-      return NextResponse.json({ text: normalizeText(buffer.toString("utf-8")) });
+      const text = buffer.toString("utf-8");
+      if (!text.trim()) {
+        return NextResponse.json({ error: "File is empty. Please choose a different file." }, { status: 400 });
+      }
+      return NextResponse.json({ text: normalizeExtractedText(text) });
     }
 
     return NextResponse.json(
-      { error: "Unsupported file type (PDF/DOCX/TXT only)" },
+      { error: "Unsupported file type. Please upload a PDF, DOCX, or TXT file." },
       { status: 400 }
     );
-  } catch (e: any) {
-    console.error(e);
-    return NextResponse.json({ error: e?.message || "Extract failed" }, { status: 500 });
+  } catch {
+    return NextResponse.json(
+      { error: "Could not extract text from this file. Try a different file or paste your resume as text." },
+      { status: 500 }
+    );
   }
 }

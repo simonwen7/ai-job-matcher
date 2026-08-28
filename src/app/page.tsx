@@ -12,7 +12,7 @@ export default function Home() {
 
       <p className="text-gray-600 dark:text-neutral-300 mb-10 text-center max-w-xl text-lg leading-relaxed">
         Upload your resume. Paste a job description.
-        Get instant match score and improvement suggestions powered by AI.
+        Get structured alignment feedback on strengths, gaps, and possible improvements.
       </p>
 
       <Link

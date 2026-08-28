@@ -2,14 +2,10 @@
 
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
-
-type AnalyzeResult = {
-  score: number; // 0-100
-  summary: string;
-  strengths: string[];
-  missingSkills: string[];
-  suggestions: string[];
-};
+import { clampScore, getResumeLengthError, normalizeResult, validateAnalyzeInput, type AnalyzeResult } from "@/lib/analyze";
+import { MAX_JOB_CHARS, MAX_RESUME_CHARS, MAX_UPLOAD_MB, formatCharLimit } from "@/lib/constants";
+import { mapAnalyzeApiError, mapExtractApiError } from "@/lib/errors";
+import { validateUpload } from "@/lib/upload";
 
 function normalizeExtractedText(raw: string) {
   let s = (raw || "")
@@ -180,26 +176,6 @@ function toBullets(raw: string): { title?: string; bullets: string[] } {
   const finalBullets = bullets.map((b) => (b.startsWith("## ") ? b : `• ${b}`));
   return { title, bullets: finalBullets };
 }
-
-function clampScore(x: unknown) {
-  const n = typeof x === "number" ? x : Number(x);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(100, Math.round(n)));
-}
-
-// ✅ 关键：把后端返回的“可能缺字段/字段类型不对”的 data，规范成 AnalyzeResult
-function normalizeAnalyzeResult(data: any): AnalyzeResult {
-  return {
-    score: clampScore(data?.score),
-    summary: typeof data?.summary === "string" ? data.summary : "",
-    strengths: Array.isArray(data?.strengths) ? data.strengths.filter((x: any) => typeof x === "string") : [],
-    missingSkills: Array.isArray(data?.missingSkills)
-      ? data.missingSkills.filter((x: any) => typeof x === "string")
-      : [],
-    suggestions: Array.isArray(data?.suggestions) ? data.suggestions.filter((x: any) => typeof x === "string") : [],
-  };
-}
-
 export default function AnalyzePage() {
   const [resume, setResume] = useState("");
   const [job, setJob] = useState("");
@@ -221,6 +197,14 @@ export default function AnalyzePage() {
 
     setError(null);
     setResult(null);
+
+    const uploadCheck = validateUpload(file.name, file.size);
+    if (!uploadCheck.ok) {
+      setError(uploadCheck.message);
+      e.target.value = "";
+      return;
+    }
+
     setLoadingExtract(true);
 
     try {
@@ -234,13 +218,23 @@ export default function AnalyzePage() {
 
       const data = await res.json();
 
-      if (!res.ok) throw new Error(data?.error || "Extract failed");
-      if (typeof data?.text !== "string") throw new Error("No text returned from /api/extract");
+      if (!res.ok) {
+        throw new Error(mapExtractApiError(res.status, data?.error));
+      }
+      if (typeof data?.text !== "string") {
+        throw new Error("Could not extract text from this file. Try pasting your resume as text.");
+      }
+
+      const resumeLengthError = getResumeLengthError(data.text);
+      if (resumeLengthError) {
+        throw new Error(resumeLengthError);
+      }
 
       setResumeSource("file");
       setResume(data.text);
-    } catch (err: any) {
-      setError(err?.message || "Upload failed");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Upload failed. Please try again.";
+      setError(message);
     } finally {
       setLoadingExtract(false);
       e.target.value = "";
@@ -249,8 +243,15 @@ export default function AnalyzePage() {
 
   const handleAnalyze = async () => {
     setError(null);
-    setLoadingAnalyze(true);
     setResult(null);
+
+    const inputError = validateAnalyzeInput(resume, job);
+    if (inputError) {
+      setError(inputError);
+      return;
+    }
+
+    setLoadingAnalyze(true);
 
     try {
       const res = await fetch("/api/analyze", {
@@ -261,12 +262,14 @@ export default function AnalyzePage() {
 
       const data = await res.json();
 
-      if (!res.ok) throw new Error(data?.error || "Analyze failed");
+      if (!res.ok) {
+        throw new Error(mapAnalyzeApiError(res.status, data?.error));
+      }
 
-      // ✅ 不直接 setResult(data)，避免字段不全/类型不对导致 UI 报错
-      setResult(normalizeAnalyzeResult(data));
-    } catch (err: any) {
-      setError(err?.message || "Analyze failed");
+      setResult(normalizeResult(data));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Something went wrong. Please try again.";
+      setError(message);
     } finally {
       setLoadingAnalyze(false);
     }
@@ -308,7 +311,10 @@ export default function AnalyzePage() {
               file:bg-black file:px-4 file:py-2 file:text-white hover:file:bg-gray-800
               dark:file:bg-white dark:file:text-black"
           />
-          <p className="mt-2 text-xs text-gray-500 dark:text-neutral-400">Supports: .pdf / .docx / .txt</p>
+          <p className="mt-2 text-xs text-gray-500 dark:text-neutral-400">
+            Supports: .pdf / .docx / .txt · Maximum file size: {MAX_UPLOAD_MB} MB · Maximum length:{" "}
+            {formatCharLimit(MAX_RESUME_CHARS)} characters
+          </p>
 
           {/* ✅ 如果是“粘贴模式”，才显示 textarea */}
           {resumeSource !== "file" && (
@@ -371,6 +377,9 @@ export default function AnalyzePage() {
         {/* Job */}
         <section className="mt-6 rounded-2xl bg-white dark:bg-neutral-900 p-6 shadow-sm ring-1 ring-black/5 dark:ring-white/10">
           <h2 className="text-lg font-semibold">Job Description</h2>
+          <p className="mt-1 text-xs text-gray-500 dark:text-neutral-400">
+            Maximum length: {formatCharLimit(MAX_JOB_CHARS)} characters
+          </p>
           <textarea
             value={job}
             onChange={(e) => setJob(e.target.value)}
@@ -382,7 +391,7 @@ export default function AnalyzePage() {
           />
         </section>
 
-        <div className="mt-6 flex gap-4">
+        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center">
           <button
             onClick={handleAnalyze}
             disabled={loadingAnalyze || !resume.trim() || !job.trim()}
@@ -400,6 +409,11 @@ export default function AnalyzePage() {
             Clear
           </button>
         </div>
+
+        <p className="mt-3 text-xs text-gray-500 dark:text-neutral-400 max-w-2xl">
+          Your resume and job description are sent to OpenAI for analysis. This app does not save your
+          resume, job description, or analysis history.
+        </p>
 
         {error && (
           <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200">
@@ -422,9 +436,13 @@ export default function AnalyzePage() {
 
               <div className="shrink-0 text-right">
                 <div className="text-3xl font-extrabold">{clampScore(result.score)}%</div>
-                <div className="text-xs text-gray-500 dark:text-neutral-400">Overall fit</div>
+                <div className="text-xs text-gray-500 dark:text-neutral-400">Resume–job alignment</div>
               </div>
             </div>
+
+            <p className="mt-2 text-xs text-gray-500 dark:text-neutral-400">
+              AI-generated guidance, not an ATS or hiring prediction.
+            </p>
 
             {/* Progress Bar */}
             <div className="mt-5">
